@@ -34,16 +34,19 @@ def telemetry(sid, data):
     image = Image.open(BytesIO(base64.b64decode(imgString)))
     image_array = np.asarray(image)
     transformed_image_array = image_array[None, :, :, :]
-    # This model currently assumes that the features of the model are just the images. Feel free to change this.
+    # This model currently assumes features of the model are just the images. 
+    # Feel free to change this.
+    print ("Predicting steering angle")
     steering_angle = float(model.predict(transformed_image_array, batch_size=1))
+    print ("Predicted %s" % steering_angle)
     # The driving model currently just outputs a constant throttle. Feel free to edit this.
-    throttle = 0.2
+    throttle = 0.1
     print(steering_angle, throttle)
     send_control(steering_angle, throttle)
 
 
 @sio.on('connect')
-def connect(sid):
+def connect(sid, environ):
     print("connect ", sid)
     send_control(0, 0)
 
@@ -61,7 +64,7 @@ if __name__ == '__main__':
     help='Path to model definition json. Model weights should be on the same path.')
     args = parser.parse_args()
     with open(args.model, 'r') as jfile:
-        model = model_from_json(json.load(jfile))
+        model = model_from_json(jfile.read())
 
     model.compile("adam", "mse")
     weights_file = args.model.replace('json', 'h5')

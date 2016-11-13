@@ -50,7 +50,7 @@ def base_model():
 
     model = Sequential()
     # this applies 32 convolution filters of size 3x3 each.
-    model.add(Convolution2D(32, 3, 3, border_mode='valid', input_shape=(320, 160, 3),
+    model.add(Convolution2D(32, 3, 3, border_mode='valid', input_shape=(160, 320, 3),
                             dim_ordering='tf'))
     model.add(Activation('relu'))
     model.add(Convolution2D(32, 3, 3))
@@ -78,9 +78,11 @@ def base_model():
 
 
 def steering_net():
+    p = 0.1 # Prob of dropout
+
     model = Sequential()
     model.add(Convolution2D(24, 5, 5, init = "normal", subsample= (2, 2), name='conv1_1', 
-              input_shape=(320, 160, 3)))
+              input_shape=(160, 320, 3)))
     model.add(Activation('relu'))
     model.add(Convolution2D(36, 5, 5, init = "normal", subsample= (2, 2), name='conv2_1'))
     model.add(Activation('relu'))
@@ -108,8 +110,11 @@ def steering_net():
 
     return model
 
-def load_batch(fpath, batches_so_far, batch_size, max_size=1000):
+def load_batch(fpath, batches_so_far, batch_size):
 
+    exhausted = False
+    batch_size = int(batch_size)
+    if batch_size == 0: batch_size = 1
     print("Fetching batch of size %s" % batch_size)
     labels = []
     data = []
@@ -121,76 +126,79 @@ def load_batch(fpath, batches_so_far, batch_size, max_size=1000):
         e_index = s_index + batch_size
         if e_index > len(reader): 
             s_index = s_index % len(reader)
+            exhausted = True
 
         for row in reader[s_index:]:
 
-            filename_full, _, _, label, _, _, _ = row.split(",")
+            values = row.split(",")
+            if len(values) != 7:
+                continue
+            filename_full, _, _, label, _, _, _ = values #row.split(",")
             filename_partial = filename_full.split("/")[-1] 
             # above is a hack, because of how Udacity simulator works
 
             tmp_img = ndimage.imread(
                           os.path.join(fpath, "IMG", filename_partial))
-            #tmp_img = tmp_img.transpose((2,0,1))
-            #print(tmp_img.shape)
-            print("Adding %s to batch" % filename_partial)
             data.append(tmp_img)
             labels.append([label])    
             current_size += 1
-            if current_size == max_size: 
+            if current_size == batch_size: 
                 break
 
     data   = np.stack(data, axis=0)
     labels = np.stack(labels, axis=0)
 
 
-    return data, labels
+    return exhausted, data, labels
 
-def load_data(batches_so_far=0, batch_size=32, total_size=1024):
+def load_data(batches_so_far=0, batch_size=1024, test=True):
 
     path = '/home/paul/workspace/keras-resnet-sdc/recorded_data'
+    exhausted = False
 
     fpath = os.path.join(path, 'train')
-    X_train, y_train = load_batch(fpath, batches_so_far, 
-                                                batch_size, max_size=total_size/2)
-
-    fpath = os.path.join(path, 'validation')
-    X_test, y_test = load_batch(fpath, batches_so_far, batch_size, 
-                                             max_size=total_size/8)
+    exhausted, X_train, y_train = load_batch(fpath, batches_so_far, 
+                                                batch_size=batch_size-200)
 
     y_train = np.reshape(y_train, (len(y_train), 1))
-    y_test = np.reshape(y_test, (len(y_test), 1))
-
-    print('X_train dimensions: ', X_train.shape)
-    X_train = X_train.transpose((0,2,1,3))
-    print('X_train_T dimensions: ', X_train.shape)
-    X_test  = X_test.transpose((0,2,1,3))
  
-    return (X_train, y_train), (X_test, y_test)
+    if test:
+        fpath = os.path.join(path, 'validation')
+        _, X_test, y_test = load_batch(fpath, batches_so_far, 
+                                   batch_size=824)
+        y_test = np.reshape(y_test, (len(y_test), 1))
+        # We don't care about exhausting the test set, so we discard the value
+    else:
+        X_test = None
+        y_test = None
+
+
+    return exhausted, (X_train, y_train), (X_test, y_test)
 
 
 def main():
 
     learning_rate = 0.1
-    batch_size = 32
-    nb_epoch = 50
+    mini_batch_size = 16
+    nb_epoch = 10
     data_augment = False
 
     model = steering_net() #base_model()
-    model.compile(loss='mean_squared_error', optimizer='adam')
+    model.compile(loss='mean_absolute_error', optimizer='adam'),
 
     seed = 7
     np.random.seed(seed)
     
     # autosave best Model
     best_model_file = "./model.h5"
-    best_model = ModelCheckpoint(best_model_file, verbose = 1, save_best_only = True)
+    checkpointer = ModelCheckpoint(best_model_file, verbose = 1, save_best_only = True)
     model_json = model.to_json()
     with open("model.json", "w") as json_file:
         json_file.write(model_json)
 
     # this will do preprocessing and realtime data augmentation
     
-    train_datagen = ImageDataGenerator(
+    datagen = ImageDataGenerator(
         rescale=1./255,
         featurewise_center = False,  # set input mean to 0 over the dataset
         samplewise_center = False,  # set each sample mean to 0
@@ -210,36 +218,21 @@ def main():
 
     
     print("fitting the model on the batches generated by datagen.flow()")
-    for e in range(nb_epoch):
-        print('Epoch', e)
-        batches = 0
-
-        # Fetch a random "Super"-batch for each epoch (some multiple of batch_size below)
-        #  X_train, X_test: (nb_samples, 3, 320, 160)
-        (X_train, y_train), (X_test, y_test) = load_data(batches_so_far= batches,
-                                                         batch_size=batch_size, 
-                                                         total_size=1024)
+    exhausted = False # Means we have gone through all of the training set
+    batches = 0
+    exhausted, (X_train, y_train), (X_test, y_test) = load_data(batches_so_far=batches)
+    X_test = X_test.astype('float32')
+    X_test = (X_test - np.mean(X_test))/np.std(X_test)
+    while not exhausted:
+        batches += 1
         X_train = X_train.astype('float32')
-        X_test = X_test.astype('float32')
-        # perpixel mean substracted
         X_train = (X_train - np.mean(X_train))/np.std(X_train)
-        X_test = (X_test - np.mean(X_test))/np.std(X_test)        
 
-        model.fit(X_train, y_train) 
-        for X_batch, y_batch in train_datagen.flow(X_train, y_train, batch_size=batch_size):
-            loss = model.train(X_batch, y_batch)
-            batches += 1
-            if batches >= len(X_train) / batch_size:
-                # generator loops indefinetly, this is needed
-                break
-
-
-        print('loading best model...')
-        model.load_weights(best_model_file)
-        score = model.evaluate(X_test, y_test, batch_size = batch_size, verbose = 1)
-        print('Validaton score:', score)
-        print('Validation accuracy:', score[1])
-
+        model.fit_generator(datagen.flow(X_train, y_train, batch_size=mini_batch_size),
+                            samples_per_epoch=len(X_train), nb_epoch=nb_epoch,
+                            validation_data=(X_test, y_test), callbacks=[checkpointer])
+                            
+        exhausted, (X_train, y_train), _ = load_data(batches_so_far=batches, test=False)
 
 if __name__ == '__main__':
     main()
