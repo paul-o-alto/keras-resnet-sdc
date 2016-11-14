@@ -38,8 +38,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.model_selection import KFold, cross_val_score
 
 
-DRIVING_TYPES = ['mixed'] #, 'corrective', 'inline'] # Choose what type of data to sample
-COURSES = ['flat'] #, 'inclines'] # Randomly sample from this
+DRIVING_TYPES = ['corrective', 'inline']#, 'mixed'] # Choose what type of data to sample
+COURSES = ['flat', 'inclines'] # Randomly sample from this
 # These two lists represent a tree: top level choose flat or inclines
 # Second level choose mixed, corrective or inline
 
@@ -55,23 +55,26 @@ def base_model():
     model.add(Activation('relu'))
     model.add(Convolution2D(16, 3, 3))
     model.add(Activation('relu'))
-    model.add(MaxPooling2D(pool_size=(3, 3)))
+    model.add(MaxPooling2D(pool_size=(4,4)))
     model.add(Dropout(0.25))
 
-    model.add(Convolution2D(32, 3, 3, border_mode='valid'))
+    model.add(Convolution2D(16, 3, 3, border_mode='valid'))
     model.add(Activation('relu'))
-    model.add(Convolution2D(32, 3, 3))
+    model.add(Convolution2D(16, 3, 3))
     model.add(Activation('relu'))
     model.add(MaxPooling2D(pool_size=(2, 2))) 
     model.add(Dropout(0.25))
 
     model.add(Flatten())
-    model.add(Dense(10))
+    model.add(Dense(100))
     model.add(Activation('relu'))
-    model.add(Dropout(0.5))
+    #model.add(Dropout(0.5))
+    model.add(Dense(100))
+    model.add(Activation('relu'))
 
-    model.add(Dense(1, activation='sigmoid'))#init='normal'))
-     
+    #model.add(Lambda(
+    model.add(Dense(1))#init='normal'))
+    model.add(Activation('linear')) 
 
     return model
 
@@ -79,24 +82,27 @@ def base_model():
 
 def load_batch(course_data, course_name, batches_so_far, batch_size, test=False):
 
+    driving_type = np.random.choice(DRIVING_TYPES)
+    driving_type_data = course_data[driving_type]
 
     if not test: 
         s_index = batches_so_far*batch_size
-        if s_index + batch_size*2 > len(course_data):
-            s_index = s_index % len(course_data)
+        if s_index + batch_size*2 > len(driving_type_data):
+            s_index = s_index % len(driving_type_data)
 
-        sub_list = course_data[s_index:s_index+batch_size]
-        data, labels = build_batch(batch_size, sub_list, course_name)
+        sub_list = driving_type_data[s_index:s_index+batch_size]
+        data, labels = build_batch(batch_size, sub_list, course_name, driving_type)
     else:
         batch_size = int(0.3*batch_size)
-        sub_list = course_data[len(course_data)-1-batch_size:]
-        data, labels = build_batch(batch_size, sub_list, course_name)
+        sub_list = driving_type_data[0:batch_size] #len(course_data)-1-batch_size:]
+        data, labels = build_batch(batch_size, sub_list, course_name, driving_type)
 
-    print("Fetching batch of size %s for the %s course" % (batch_size, course_name))
+    print("Fetching batch of size %s for the %s course with driving type %s" % (batch_size, 
+                                                                      course_name, driving_type))
 
     return data, labels
 
-def build_batch(batch_size, sub_list, course_name):
+def build_batch(batch_size, sub_list, course_name, driving_type):
 
     labels, data = [], []
     current_size = 0
@@ -104,16 +110,18 @@ def build_batch(batch_size, sub_list, course_name):
     stop = False
     while current_size < batch_size:
         row = sub_list[current_size]
+        if "," not in row: 
+            print ("Invalid csv row, no comma(s)")
+            continue
         values = row.split(",")
-        if len(values) != 7: continue
+        if len(values) != 7: 
+            print ("Invalid csv line, values != 7")
+            continue
         filename_full, _, _, label, _, _, _ = values
         filename_partial = filename_full.split("/")[-1] 
         # above is a hack, because of how Udacity simulator works
 
         # Randomly choose between mixed, corrective, or inline driving sets
-        # driving_type = DRIVING_TYPES[np.random.randint(0, len(DRIVING_TYPES))]    
-        # For now, just #1 mixed
-        driving_type = DRIVING_TYPES[0]   
         tmp_img = ndimage.imread(
                         os.path.join(BASE_PATH, course_name, driving_type, 
                                      "IMG", filename_partial))
@@ -130,10 +138,9 @@ def build_batch(batch_size, sub_list, course_name):
 def load_data(csv_lists, batches_so_far=0, batch_size=1024, test=False):
 
     # Randomly choose between the courses
-    course_index = np.random.randint(0, len(csv_lists))
-    # We need randint so that we can index into COURSES list for path
-    course_data = csv_lists[course_index]
-    course_name = COURSES[course_index]
+    course_name = np.random.choice(COURSES)
+    
+    course_data = csv_lists[course_name]
    
     X_train, y_train = load_batch(course_data, course_name, batches_so_far, 
                                   batch_size=batch_size)
@@ -154,16 +161,16 @@ def load_data(csv_lists, batches_so_far=0, batch_size=1024, test=False):
 
 def main():
 
-    #learning_rate = 0.01
     mini_batch_size = 64
     nb_epoch = 20
     data_augment = False
 
-    #model = steering_net() 
     model = base_model()
     #model = ResNetBuilder.build_resnet_18((3, 320, 160), 1)
-    model.compile(#lr=learning_rate, 
-                  loss='mse', optimizer='adam') # RMSprop'),
+    model.compile(lr=0.01, 
+                  loss='mse', 
+                  optimizer='RMSprop', #'adam'
+                  ) # RMSprop'),
     model.summary()
 
     seed = 7
@@ -198,14 +205,24 @@ def main():
     
 
     print("Start training...")
-    csv_lists = []
+    csv_lists = {}
     for course in COURSES:
+        course_dict = {}
+        type_dict = {}
         for driving_type in DRIVING_TYPES:
             f = open(os.path.join(BASE_PATH, course, driving_type, 'driving_log.csv'))
             csv_list = f.read().split("\n")
-            csv_lists.append(csv_list)
+            type_dict[driving_type] = csv_list
             f.close()
+        csv_lists[course] = type_dict
+   
+    for key in csv_lists.keys():
+        print(key)
+        for driving_type in csv_lists[key].keys():
+            print("  %s" % driving_type)
+ 
     
+ 
     print("fitting the model on the batches generated by datagen.flow()")
     exhausted = False # Means we have gone through all of the training set
     batches = 0
