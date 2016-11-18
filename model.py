@@ -13,6 +13,8 @@ from keras import backend as K
 from keras.layers.core import Lambda
 from keras.callbacks import ModelCheckpoint
 
+from keras.optimizers import SGD
+
 from keras.models import (
     Model,
     Sequential
@@ -28,7 +30,8 @@ from keras.layers import (
 from keras.layers.convolutional import (
     Convolution2D,
     MaxPooling2D,
-    AveragePooling2D
+    AveragePooling2D,
+    ZeroPadding2D
 )
 from keras.preprocessing.image import ImageDataGenerator
 from keras.layers.normalization import BatchNormalization
@@ -46,19 +49,69 @@ COURSES = ['flat'] #, 'inclines'] # Randomly sample from this
 # Second level choose mixed, corrective or inline
 
 BASE_PATH = '/home/paul/workspace/keras-resnet-sdc/recorded_data'
-MINI_BATCH_SIZE = 64
+MINI_BATCH_SIZE = 16 #64 #128
 
 # needed, because mse and mae just produce a network that predicts the mean angle
 def sum_squared_error(y_true, y_pred):
     return K.sum(K.square(y_pred - y_true), axis=0)
 
+
+def VGG_16(weights_path=None):
+    model = Sequential()
+    model.add(ZeroPadding2D((1,1),input_shape=(160, 320, 3), dim_ordering='tf'))
+    model.add(Convolution2D(64, 3, 3, activation='relu'))
+    model.add(ZeroPadding2D((1,1)))
+    model.add(Convolution2D(64, 3, 3, activation='relu'))
+    model.add(MaxPooling2D((2,2), strides=(4,4)))
+
+    model.add(ZeroPadding2D((1,1)))
+    model.add(Convolution2D(128, 3, 3, activation='relu'))
+    model.add(ZeroPadding2D((1,1)))
+    model.add(Convolution2D(128, 3, 3, activation='relu'))
+    model.add(MaxPooling2D((2,2), strides=(2,2)))
+
+    model.add(ZeroPadding2D((1,1)))
+    model.add(Convolution2D(256, 3, 3, activation='relu'))
+    model.add(ZeroPadding2D((1,1)))
+    model.add(Convolution2D(256, 3, 3, activation='relu'))
+    model.add(ZeroPadding2D((1,1)))
+    model.add(Convolution2D(256, 3, 3, activation='relu'))
+    model.add(MaxPooling2D((2,2), strides=(2,2)))
+
+    model.add(ZeroPadding2D((1,1)))
+    model.add(Convolution2D(512, 3, 3, activation='relu'))
+    model.add(ZeroPadding2D((1,1)))
+    model.add(Convolution2D(512, 3, 3, activation='relu'))
+    model.add(ZeroPadding2D((1,1)))
+    model.add(Convolution2D(512, 3, 3, activation='relu'))
+    model.add(MaxPooling2D((2,2), strides=(2,2)))
+
+    model.add(ZeroPadding2D((1,1)))
+    model.add(Convolution2D(512, 3, 3, activation='relu'))
+    model.add(ZeroPadding2D((1,1)))
+    model.add(Convolution2D(512, 3, 3, activation='relu'))
+    model.add(ZeroPadding2D((1,1)))
+    model.add(Convolution2D(512, 3, 3, activation='relu'))
+    model.add(MaxPooling2D((2,2), strides=(4,4)))
+
+    model.add(Flatten())
+    model.add(Dense(4096, activation='relu'))
+    model.add(Dropout(0.5))
+    model.add(Dense(4096, activation='relu'))
+    model.add(Dropout(0.5))
+    model.add(Dense(1, activation='tanh'))
+
+    if weights_path:
+        model.load_weights(weights_path)
+
+    return model
+
 def base_model():
-    overall_activation = 'relu' 
+    overall_activation = 'softsign'  
+    scale_factor = 2
 
     model = Sequential()
     # From Nvidia paper
-    #model.add(BatchNormalization(input_shape=(160, 320, 3),
-    #                             epsilon=1e-06, mode=0, momentum=0.9, weights=None))
     model.add(Convolution2D(24, 5, 5, input_shape=(160, 320, 3), 
                             border_mode='valid', dim_ordering='tf'))
     model.add(MaxPooling2D(strides=(4,4)))
@@ -67,7 +120,7 @@ def base_model():
     model.add(Activation(overall_activation))
     model.add(Convolution2D(48, 5, 5))
     model.add(Activation(overall_activation))
-    model.add(Dropout(0.2))
+    model.add(Dropout(0.05))
     model.add(Convolution2D(64, 3, 3))
     model.add(Activation(overall_activation))
     model.add(Convolution2D(64, 3, 3))
@@ -75,15 +128,15 @@ def base_model():
     model.add(MaxPooling2D(strides=(4,4)))
     model.add(Flatten())
     
-    model.add(Dense(1164))
+    model.add(Dense(1164, init="normal"))
     model.add(Activation(overall_activation))
     model.add(Dropout(0.1))
-    model.add(Dense(100))
+    model.add(Dense(100, init="normal"))
     model.add(Activation(overall_activation))
     model.add(Dropout(0.1))
-    model.add(Dense(50))
+    model.add(Dense(50, init="normal"))
     model.add(Activation(overall_activation))
-    model.add(Dense(10))
+    model.add(Dense(10, init="normal"))
 
     model.add(Dense(1))
     model.add(Activation(overall_activation)) 
@@ -155,7 +208,7 @@ def build_batch(batch_size, sub_list, course_name, driving_type):
     return data, labels            
 
 
-def load_data(csv_lists, batches_so_far=0, batch_size=512, test=False):
+def load_data(csv_lists, batches_so_far=0, batch_size=1024, test=False):
 
     # Randomly choose between the courses
     course_name = np.random.choice(COURSES)
@@ -187,10 +240,13 @@ def main():
 
     model = base_model()
     #model = ResNetBuilder.build_resnet_18((3, 320, 160), 1)
-    model.compile(#lr=0.01, 
-                  loss=sum_squared_error, #'mse', 
-                  optimizer='adam', #'RMSprop', #'adam'
-                  ) # RMSprop'),
+    #model = VGG_16()
+    #sgd = SGD(lr=0.01, decay=1e-6, momentum=0.9, nesterov=True)
+    model.compile( 
+                  loss='mse', 
+                  #loss=sum_squared_error,  
+                  optimizer='adam'
+                  ) 
     model.summary()
 
     seed = 7
@@ -201,7 +257,7 @@ def main():
     if os.path.isfile(best_model_file):   
         model.load_weights(best_model_file)
     checkpointer = ModelCheckpoint(best_model_file, 
-                                   verbose = 1, save_best_only = False)
+                                   verbose = 1, save_best_only = True)
     model_json = model.to_json()
     with open("model.json", "w") as json_file:
         json_file.write(model_json)
@@ -211,13 +267,13 @@ def main():
 
     # this will do preprocessing and realtime data augmentation 
     datagen = ImageDataGenerator(
-        rescale=1./255,
+        rescale=1,
         featurewise_center = False,  # set input mean to 0 over the dataset
         samplewise_center = False,  # set each sample mean to 0
         featurewise_std_normalization = False,  # divide inputs by std of the dataset
         samplewise_std_normalization = False,  # divide each input by its std
         zca_whitening = False,  # apply ZCA whitening
-        rotation_range = 10,  # randomly rotate images in the range (degrees, 0 to 180)
+        rotation_range = 0,  # randomly rotate images in the range (degrees, 0 to 180)
         horizontal_flip = False,  # randomly flip images
         vertical_flip = False)  # randomly flip images
 
@@ -249,29 +305,32 @@ def main():
     exhausted, (X_train, y_train), (X_test, y_test) = load_data(csv_lists, 
                                                      batches_so_far=batches,
                                                      test=True)
-    X_test = X_test.astype('float32')
-    X_test = (X_test - np.mean(X_test))/np.std(X_test)
-    epoch = 1
+    #X_test = X_test.astype('float32')
+    #X_test = (X_test - np.mean(X_test))/np.std(X_test)
+    epochs = 10
+    epoch  = 0
+    exhaust_batch_amount = 0
     print("Starting first epoch")
-    while epoch <= 10:
+    while epoch < epochs: 
         batches += 1
         print('Starting batch %s' % batches)
-        X_train = X_train.astype('float32')
-        X_train = (X_train - np.mean(X_train))/np.std(X_train)
+        #X_train = X_train.astype('float32')
+        #X_train = (X_train - np.mean(X_train))/np.std(X_train)
 
         model.fit_generator(datagen.flow(X_train, y_train, 
                                          batch_size=mini_batch_size),
-                            samples_per_epoch=len(X_train), nb_epoch=1, # Epochs on subsample 
+                            samples_per_epoch=len(X_train), nb_epoch=1, # on subsample 
                             validation_data=(X_test, y_test), 
                             callbacks=[checkpointer])
                             
         exhausted, (X_train, y_train), _ = load_data(csv_lists, 
                                           batches_so_far=batches)
         
-        if exhausted:
+        if exhausted: 
+            batches = -1
             epoch += 1
-            print("Starting epoch %s" % epoch)
-     
+            print("End epoch %s on training set" % epoch)
+            
 
 if __name__ == '__main__':
     main()
