@@ -2,7 +2,7 @@ import os
 import csv
 import time
 
-from scipy import ndimage
+import scipy as sp
 import numpy as np
 import tensorflow as tf
 flags = tf.app.flags
@@ -25,7 +25,9 @@ from keras.layers import (
     merge,
     Dense,
     Flatten,
-    Dropout
+    Dropout,
+    SpatialDropout2D,
+    Reshape
 )
 from keras.layers.convolutional import (
     Convolution2D,
@@ -43,103 +45,61 @@ from sklearn.pipeline import Pipeline
 from sklearn.model_selection import KFold, cross_val_score
 
 
-DRIVING_TYPES = ['mixed']#, 'corrective', 'inline'] # Choose what type of data to sample
-COURSES = ['flat'] #, 'inclines'] # Randomly sample from this
+DRIVING_TYPES = ['mixed'] #, 'corrective'] #, 'inline'] # Choose what type of data to sample
+COURSES = ['flat']#, 'inclines'] # Randomly sample from this
 # These two lists represent a tree: top level choose flat or inclines
 # Second level choose mixed, corrective or inline
 
 BASE_PATH = '/home/paul/workspace/keras-resnet-sdc/recorded_data'
-MINI_BATCH_SIZE = 16 #64 #128
+MINI_BATCH_SIZE = 128
+RESIZE_FACTOR = 0.5
 
 # needed, because mse and mae just produce a network that predicts the mean angle
 def sum_squared_error(y_true, y_pred):
     return K.sum(K.square(y_pred - y_true), axis=0)
 
-
-def VGG_16(weights_path=None):
-    model = Sequential()
-    model.add(ZeroPadding2D((1,1),input_shape=(160, 320, 3), dim_ordering='tf'))
-    model.add(Convolution2D(64, 3, 3, activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(64, 3, 3, activation='relu'))
-    model.add(MaxPooling2D((2,2), strides=(4,4)))
-
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(128, 3, 3, activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(128, 3, 3, activation='relu'))
-    model.add(MaxPooling2D((2,2), strides=(2,2)))
-
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(256, 3, 3, activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(256, 3, 3, activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(256, 3, 3, activation='relu'))
-    model.add(MaxPooling2D((2,2), strides=(2,2)))
-
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(512, 3, 3, activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(512, 3, 3, activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(512, 3, 3, activation='relu'))
-    model.add(MaxPooling2D((2,2), strides=(2,2)))
-
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(512, 3, 3, activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(512, 3, 3, activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(512, 3, 3, activation='relu'))
-    model.add(MaxPooling2D((2,2), strides=(4,4)))
-
-    model.add(Flatten())
-    model.add(Dense(4096, activation='relu'))
-    model.add(Dropout(0.5))
-    model.add(Dense(4096, activation='relu'))
-    model.add(Dropout(0.5))
-    model.add(Dense(1, activation='tanh'))
-
-    if weights_path:
-        model.load_weights(weights_path)
-
-    return model
+def tanh_scaled(x):
+    return 2*K.tanh(x)
 
 def base_model():
-    overall_activation = 'softsign'  
-    scale_factor = 2
+    overall_activation = 'relu'  
+    percent_drop = 0.10
 
     model = Sequential()
     # From Nvidia paper
-    model.add(Convolution2D(24, 5, 5, input_shape=(160, 320, 3), 
-                            border_mode='valid', dim_ordering='tf'))
-    model.add(MaxPooling2D(strides=(4,4)))
+    model.add(Convolution2D(24, 5, 5, subsample=(2,2), 
+                            input_shape=(160*RESIZE_FACTOR, 
+                                         320*RESIZE_FACTOR, 3), 
+                            border_mode='same', dim_ordering='tf'))
     model.add(Activation(overall_activation))
-    model.add(Convolution2D(36, 5, 5))
+    model.add(SpatialDropout2D(percent_drop, dim_ordering='tf'))
+    model.add(Convolution2D(36, 5, 5, subsample=(2,2)))
     model.add(Activation(overall_activation))
-    model.add(Convolution2D(48, 5, 5))
+    model.add(SpatialDropout2D(percent_drop, dim_ordering='tf'))
+    model.add(Convolution2D(48, 5, 5, subsample=(2,2)))
     model.add(Activation(overall_activation))
-    model.add(Dropout(0.05))
+    model.add(SpatialDropout2D(percent_drop, dim_ordering='tf'))
     model.add(Convolution2D(64, 3, 3))
     model.add(Activation(overall_activation))
+    model.add(SpatialDropout2D(percent_drop, dim_ordering='tf'))
     model.add(Convolution2D(64, 3, 3))
     model.add(Activation(overall_activation))
-    model.add(MaxPooling2D(strides=(4,4)))
+
     model.add(Flatten())
     
     model.add(Dense(1164, init="normal"))
     model.add(Activation(overall_activation))
-    model.add(Dropout(0.1))
+    model.add(Dropout(percent_drop))
     model.add(Dense(100, init="normal"))
     model.add(Activation(overall_activation))
-    model.add(Dropout(0.1))
+    model.add(Dropout(percent_drop))
     model.add(Dense(50, init="normal"))
     model.add(Activation(overall_activation))
+    model.add(Dropout(percent_drop))
     model.add(Dense(10, init="normal"))
 
-    model.add(Dense(1))
-    model.add(Activation(overall_activation)) 
+    model.add(Dense(1, activation='tanh'))
+    model.add(Activation('tanh'))  
 
     return model
 
@@ -167,7 +127,7 @@ def load_batch(course_data, course_name, batches_so_far, batch_size, test=False)
         data, labels = build_batch(batch_size, sub_list, course_name, driving_type)
     else:
         batch_size = int(0.3*batch_size)
-        sub_list = driving_type_data[0:batch_size] #len(course_data)-1-batch_size:]
+        sub_list = driving_type_data[-1-batch_size:-1] #len(course_data)-1-batch_size:]
         data, labels = build_batch(batch_size, sub_list, course_name, driving_type)
 
     print("Fetching batch of size %s for the %s course with driving type %s" % (batch_size, 
@@ -195,9 +155,11 @@ def build_batch(batch_size, sub_list, course_name, driving_type):
         # above is a hack, because of how Udacity simulator works
 
         # Randomly choose between mixed, corrective, or inline driving sets
-        tmp_img = ndimage.imread(
+        tmp_img = sp.ndimage.imread(
                         os.path.join(BASE_PATH, course_name, driving_type, 
                                      "IMG", filename_partial))
+        if RESIZE_FACTOR < 1:
+            tmp_img = sp.misc.imresize(tmp_img, RESIZE_FACTOR)
         data.append(tmp_img)
         labels.append([label])    
         current_size += 1
@@ -222,7 +184,7 @@ def load_data(csv_lists, batches_so_far=0, batch_size=1024, test=False):
  
     if test:
         _, X_test, y_test = load_batch(course_data, course_name, batches_so_far, 
-                                   batch_size=batch_size, test=True)
+                                   batch_size=batch_size, test=test)
         y_test = np.reshape(y_test, (len(y_test), 1))
     else:
         X_test = None
@@ -234,17 +196,13 @@ def load_data(csv_lists, batches_so_far=0, batch_size=1024, test=False):
 
 def main():
 
-    mini_batch_size = MINI_BATCH_SIZE
-    nb_epoch = 20
+    mini_batch_size = MINI_BATCH_SIZE 
     data_augment = False
 
     model = base_model()
-    #model = ResNetBuilder.build_resnet_18((3, 320, 160), 1)
-    #model = VGG_16()
     #sgd = SGD(lr=0.01, decay=1e-6, momentum=0.9, nesterov=True)
     model.compile( 
-                  loss='mse', 
-                  #loss=sum_squared_error,  
+                  loss='mse',  
                   optimizer='adam'
                   ) 
     model.summary()
@@ -253,17 +211,14 @@ def main():
     np.random.seed(seed)
     
     # autosave best Model and load any previous weights
-    best_model_file = "./model.h5"
-    if os.path.isfile(best_model_file):   
-        model.load_weights(best_model_file)
-    checkpointer = ModelCheckpoint(best_model_file, 
+    model_file = "./model.h5"
+    if os.path.isfile(model_file):   
+        model.load_weights(model_file)
+    checkpointer = ModelCheckpoint(model_file, 
                                    verbose = 1, save_best_only = True)
     model_json = model.to_json()
     with open("model.json", "w") as json_file:
         json_file.write(model_json)
-
-    if os.path.isfile(best_model_file): 
-        model.load_weights(best_model_file)
 
     # this will do preprocessing and realtime data augmentation 
     datagen = ImageDataGenerator(
@@ -305,32 +260,34 @@ def main():
     exhausted, (X_train, y_train), (X_test, y_test) = load_data(csv_lists, 
                                                      batches_so_far=batches,
                                                      test=True)
-    #X_test = X_test.astype('float32')
-    #X_test = (X_test - np.mean(X_test))/np.std(X_test)
-    epochs = 10
+    epochs = 100
     epoch  = 0
     exhaust_batch_amount = 0
     print("Starting first epoch")
-    while epoch < epochs: 
-        batches += 1
-        print('Starting batch %s' % batches)
-        #X_train = X_train.astype('float32')
-        #X_train = (X_train - np.mean(X_train))/np.std(X_train)
+   
+    try: 
+        while epoch < epochs: 
+            batches += 1
+            print('Starting batch %s' % batches)
+            #X_train = X_train.astype('float32')
+            #X_train = (X_train - np.mean(X_train))/np.std(X_train)
 
-        model.fit_generator(datagen.flow(X_train, y_train, 
+            model.fit_generator(datagen.flow(X_train, y_train, 
                                          batch_size=mini_batch_size),
                             samples_per_epoch=len(X_train), nb_epoch=1, # on subsample 
                             validation_data=(X_test, y_test), 
                             callbacks=[checkpointer])
                             
-        exhausted, (X_train, y_train), _ = load_data(csv_lists, 
+            exhausted, (X_train, y_train), _ = load_data(csv_lists, 
                                           batches_so_far=batches)
         
-        if exhausted: 
-            batches = -1
-            epoch += 1
-            print("End epoch %s on training set" % epoch)
-            
+            if exhausted: 
+                batches = -1
+                epoch += 1
+                print("End epoch %s on training set" % epoch)
+    except KeyboardInterrupt:
+        print("Saving most recent weights before halting...")
+        model.save_weights(model_file)      
 
 if __name__ == '__main__':
     main()
