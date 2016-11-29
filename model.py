@@ -46,12 +46,12 @@ from sklearn.model_selection import KFold, cross_val_score
 
 
 DRIVING_TYPES = ['mixed'] #, 'corrective'] #, 'inline'] # Choose what type of data to sample
-COURSES = ['flat']#, 'inclines'] # Randomly sample from this
+COURSES = ['flat', 'inclines'] # Randomly sample from this
 # These two lists represent a tree: top level choose flat or inclines
 # Second level choose mixed, corrective or inline
 
 BASE_PATH = '/home/paul/workspace/keras-resnet-sdc/recorded_data'
-MINI_BATCH_SIZE = 128
+MINI_BATCH_SIZE = 64
 RESIZE_FACTOR = 0.5
 
 # needed, because mse and mae just produce a network that predicts the mean angle
@@ -79,10 +79,10 @@ def base_model():
     model.add(Convolution2D(48, 5, 5, subsample=(2,2)))
     model.add(Activation(overall_activation))
     model.add(SpatialDropout2D(percent_drop, dim_ordering='tf'))
-    model.add(Convolution2D(64, 3, 3))
+    model.add(Convolution2D(64, 3, 3, subsample=(2,2)))
     model.add(Activation(overall_activation))
     model.add(SpatialDropout2D(percent_drop, dim_ordering='tf'))
-    model.add(Convolution2D(64, 3, 3))
+    model.add(Convolution2D(64, 3, 3, subsample=(1,1)))
     model.add(Activation(overall_activation))
 
     model.add(Flatten())
@@ -170,7 +170,7 @@ def build_batch(batch_size, sub_list, course_name, driving_type):
     return data, labels            
 
 
-def load_data(csv_lists, batches_so_far=0, batch_size=1024, test=False):
+def load_data(csv_lists, batches_so_far=0, batch_size=256, test=False):
 
     # Randomly choose between the courses
     course_name = np.random.choice(COURSES)
@@ -278,7 +278,7 @@ def main():
                             validation_data=(X_test, y_test), 
                             callbacks=[checkpointer])
                             
-            exhausted, (X_train, y_train), _ = load_data(csv_lists, 
+            exhausted, (X_train, y_train), _ = load_data(csv_lists, batch_size=mini_batch_size, 
                                           batches_so_far=batches)
         
             if exhausted: 
