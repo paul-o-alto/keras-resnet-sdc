@@ -1,19 +1,25 @@
 import os
 import csv
 import time
+import cv2
 
 import scipy as sp
 import numpy as np
 import tensorflow as tf
 flags = tf.app.flags
 flags.FLAGS.CUDA_VISIBLE_DEVICES = ''
-from resnet import ResNetBuilder
+
+config = tf.ConfigProto()
+config.gpu_options.allow_growth = True
 
 from keras import backend as K
 from keras.layers.core import Lambda
 from keras.callbacks import ModelCheckpoint
-
-from keras.optimizers import SGD
+from keras.applications import VGG16, VGG19
+from keras.applications.resnet50 import ResNet50
+from keras.applications.inception_v3 import InceptionV3
+from keras.applications.xception import Xception
+from keras.optimizers import SGD, Adam, RMSprop
 
 from keras.models import (
     Model,
@@ -27,7 +33,10 @@ from keras.layers import (
     Flatten,
     Dropout,
     SpatialDropout2D,
-    Reshape
+    Reshape,
+    ELU,
+    Conv2D,
+    GlobalAveragePooling2D
 )
 from keras.layers.convolutional import (
     Convolution2D,
@@ -39,20 +48,25 @@ from keras.preprocessing.image import ImageDataGenerator
 from keras.layers.normalization import BatchNormalization
 from keras.utils.visualize_util import plot
 from keras.wrappers.scikit_learn import KerasRegressor
+from keras.regularizers import l2
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import KFold, cross_val_score
 
+K.set_image_dim_ordering("tf")
 
 DRIVING_TYPES = ['mixed'] #, 'corrective'] #, 'inline'] # Choose what type of data to sample
-COURSES = ['flat', 'inclines'] # Randomly sample from this
+COURSES = ['flat']#, 'inclines'] # Randomly sample from this
 # These two lists represent a tree: top level choose flat or inclines
 # Second level choose mixed, corrective or inline
 
 BASE_PATH = '/home/paul/workspace/keras-resnet-sdc/recorded_data'
-MINI_BATCH_SIZE = 64
-RESIZE_FACTOR = 0.5
+MINI_BATCH_SIZE = 128
+RESIZE_FACTOR = 1 #0.5 
+INPUT_SHAPE = (160*RESIZE_FACTOR, 320*RESIZE_FACTOR, 3)
+WEIGHTS = 'imagenet'
+TRAINABLE = False # Determines if we train existing architectures end-to-end
 
 # needed, because mse and mae just produce a network that predicts the mean angle
 def sum_squared_error(y_true, y_pred):
@@ -61,48 +75,173 @@ def sum_squared_error(y_true, y_pred):
 def tanh_scaled(x):
     return 2*K.tanh(x)
 
+# From Nvidia paper
 def base_model():
-    overall_activation = 'relu'  
+    overall_activation = 'elu'  
     percent_drop = 0.10
 
     model = Sequential()
-    # From Nvidia paper
     model.add(Convolution2D(24, 5, 5, subsample=(2,2), 
-                            input_shape=(160*RESIZE_FACTOR, 
-                                         320*RESIZE_FACTOR, 3), 
-                            border_mode='same', dim_ordering='tf'))
+                            input_shape=INPUT_SHAPE, 
+                            border_mode='valid', dim_ordering='tf'))
     model.add(Activation(overall_activation))
-    model.add(SpatialDropout2D(percent_drop, dim_ordering='tf'))
-    model.add(Convolution2D(36, 5, 5, subsample=(2,2)))
+    model.add(Convolution2D(36, 5, 5, border_mode='valid', subsample=(2,2)))
     model.add(Activation(overall_activation))
-    model.add(SpatialDropout2D(percent_drop, dim_ordering='tf'))
-    model.add(Convolution2D(48, 5, 5, subsample=(2,2)))
+    model.add(Convolution2D(48, 5, 5, border_mode='valid', subsample=(2,2)))
     model.add(Activation(overall_activation))
-    model.add(SpatialDropout2D(percent_drop, dim_ordering='tf'))
-    model.add(Convolution2D(64, 3, 3, subsample=(2,2)))
+    model.add(Convolution2D(64, 3, 3, border_mode='valid', subsample=(1,1)))
     model.add(Activation(overall_activation))
-    model.add(SpatialDropout2D(percent_drop, dim_ordering='tf'))
-    model.add(Convolution2D(64, 3, 3, subsample=(1,1)))
+    model.add(Convolution2D(64, 3, 3, border_mode='valid', subsample=(1,1)))
     model.add(Activation(overall_activation))
 
     model.add(Flatten())
     
     model.add(Dense(1164, init="normal"))
     model.add(Activation(overall_activation))
-    model.add(Dropout(percent_drop))
     model.add(Dense(100, init="normal"))
     model.add(Activation(overall_activation))
-    model.add(Dropout(percent_drop))
     model.add(Dense(50, init="normal"))
     model.add(Activation(overall_activation))
-    model.add(Dropout(percent_drop))
     model.add(Dense(10, init="normal"))
-
-    model.add(Dense(1, activation='tanh'))
-    model.add(Activation('tanh'))  
+    model.add(Dense(1))
+      
 
     return model
 
+
+
+def vgg16_model():
+
+    input_image = Input(shape=INPUT_SHAPE)
+    base_model = VGG16(weights=WEIGHTS,
+                       input_tensor=input_image, include_top=False)
+
+    if not TRAINABLE:		
+        for layer in base_model.layers:
+            layer.trainable = False
+   
+    x = base_model.output
+    x = GlobalAveragePooling2D()(x)
+    x = BatchNormalization()(x)
+    x = Flatten()(x)
+    x = Dense(4096, activation="relu", W_regularizer=l2(0.01))(x)
+    x = BatchNormalization()(x)
+    x = Dense(2048, activation="relu", W_regularizer=l2(0.01))(x)
+    x = BatchNormalization()(x)
+    x = Dense(2048, activation="relu", W_regularizer=l2(0.01))(x)
+    x = Dense(1, activation="linear")(x)
+
+    model = Model(input=input_image, output=x)
+    return model
+
+def vgg19_model():
+
+    input_image = Input(shape=INPUT_SHAPE)
+    base_model = VGG19(weights=WEIGHTS, 
+                       input_tensor=input_image, include_top=False)
+
+    if not TRAINABLE:		
+        for layer in base_model.layers:
+            layer.trainable = False
+    
+    x = base_model.output
+    x = GlobalAveragePooling2D()(x)
+    x = BatchNormalization()(x)
+    x = Flatten()(x)
+    x = Dense(4096, activation="relu")(x)
+    x = Dense(2048, activation="relu")(x)
+    x = Dense(1024, activation="relu")(x)
+    x = Dense(1, activation="linear")(x)
+
+    return Model(input=input_image, output=x)
+
+def resnet_model():
+
+    base_model = ResNet50(inputs_shape=INPUT_SHAPE,
+                          weights=WEIGHTS, 
+                          include_top=False)
+
+    if not TRAINABLE:
+        # first: train only the top layers (which were randomly initialized)
+        for layer in base_model.layers:
+            layer.trainable = False
+
+    x = base_model.output
+    x = GlobalAveragePooling2D()(x) 
+    x = Dense(100,  activation='relu', name='fc1000')(x)
+    pred = Dense(1, activation='relu')(x)
+    
+    model = Model(input=base_model.input, output=pred)
+    return model
+
+
+def xception_model():
+
+    percent_drop = 0.20
+    base_model = Xception(weights='imagenet', include_top=False)
+
+    # first: train only the top layers (which were randomly initialized)
+    # i.e. freeze all convolutional layers
+    for layer in base_model.layers:
+        layer.trainable = False
+
+    x = base_model.output
+    # Essentially our own version of xception top layer, but untrained.
+    # Has additional Dense 100 layer and output of 1, not 1000
+    x = GlobalAveragePooling2D()(x)
+    x = Dense(1164, init="normal", activation='elu')(x)
+    x = Dense(100, init="normal", activation='elu')(x)
+    x = Dense(50, init="normal", activation='elu')(x)
+    x = Dense(10, init="normal", activation='elu')(x)
+    pred = Dense(1)(x) 
+    
+    model = Model(input=base_model.input, output=pred)
+
+    return model
+
+def inception_model():
+
+    base_model = InceptionV3(weights=WEIGHTS, include_top=False)
+
+    # first: train only the top layers (which were randomly initialized)
+    # i.e. freeze all convolutional InceptionV3 layers
+    if not TRAINABLE:
+        for layer in base_model.layers:
+            layer.trainable = False
+
+    x = base_model.output
+    x = GlobalAveragePooling2D()(x)
+    x = Dense(1024, activation='relu')(x)
+    x = Dense(200,  activation='relu')(x)
+    pred = Dense(1)(x)
+
+    # this is the model we will train
+    model = Model(input=base_model.input, output=pred)
+
+
+    return model
+
+def comma_ai_model():
+    model = Sequential()
+
+    model.add(Lambda(lambda x: x/127.5 - 1,
+              input_shape=INPUT_SHAPE))
+    model.add(Conv2D(16, 8, 8, subsample=(4, 4), border_mode="same"))
+    model.add(ELU())
+    model.add(Conv2D(32, 5, 5, subsample=(2, 2), border_mode="same"))
+    model.add(ELU())
+    model.add(Conv2D(64, 5, 5, subsample=(2, 2), border_mode="same"))
+
+    model.add(Flatten())
+
+    model.add(Dropout(0.2))
+    model.add(ELU())
+    model.add(Dense(512))
+    model.add(Dropout(0.5))
+    model.add(ELU())
+    model.add(Dense(1))
+    
+    return model
 
 
 def load_batch(course_data, course_name, batches_so_far, batch_size, test=False):
@@ -159,7 +298,7 @@ def build_batch(batch_size, sub_list, course_name, driving_type):
                         os.path.join(BASE_PATH, course_name, driving_type, 
                                      "IMG", filename_partial))
         if RESIZE_FACTOR < 1:
-            tmp_img = sp.misc.imresize(tmp_img, RESIZE_FACTOR)
+            tmp_img = cv2.resize(tmp_img, (0, 0), fx=RESIZE_FACTOR, fy=RESIZE_FACTOR)
         data.append(tmp_img)
         labels.append([label])    
         current_size += 1
@@ -197,16 +336,26 @@ def load_data(csv_lists, batches_so_far=0, batch_size=256, test=False):
 def main():
 
     mini_batch_size = MINI_BATCH_SIZE 
-    data_augment = False
+    model = 'comma' #xception'
 
-    model = base_model()
-    #sgd = SGD(lr=0.01, decay=1e-6, momentum=0.9, nesterov=True)
-    model.compile( 
-                  loss='mse',  
-                  optimizer='adam'
-                  ) 
+    if model == 'nvda':
+        model = base_model()
+    elif model == 'comma':
+        model = comma_ai_model()
+    elif model == 'resnet':
+        model = resnet_model() # WORST OF THEM ALL!
+    elif model == 'inception':
+        model = inception_model()
+    elif model == 'xception':
+        model = xception_model()
+    elif model == 'vgg16':
+        model = vgg16_model()
+    elif model == 'vgg19':
+        model = vgg19_model()  
+
+    model.compile(loss='mse',  
+                  optimizer=RMSprop(lr=0.005)) #Adam(lr=0.005)) 
     model.summary()
-
     seed = 7
     np.random.seed(seed)
     
