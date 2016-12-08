@@ -54,19 +54,24 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import KFold, cross_val_score
 
+from customlayers import convolution2Dgroup, crosschannelnormalization, \
+    splittensor, Softmax4D
+from imagenet_tool import synset_to_id, id_to_synset,synset_to_dfs_ids
+
 K.set_image_dim_ordering("tf")
 
 DRIVING_TYPES = ['mixed'] #, 'corrective'] #, 'inline'] # Choose what type of data to sample
-COURSES = ['flat']#, 'inclines'] # Randomly sample from this
+COURSES = ['flat']#,'inclines'] # Randomly sample from this
 # These two lists represent a tree: top level choose flat or inclines
 # Second level choose mixed, corrective or inline
-
 BASE_PATH = '/home/paul/workspace/keras-resnet-sdc/recorded_data'
-MINI_BATCH_SIZE = 128
-RESIZE_FACTOR = 1 #0.5 
+MINI_BATCH_SIZE = 256
+RESIZE_FACTOR = 0.5 
+
 INPUT_SHAPE = (160*RESIZE_FACTOR, 320*RESIZE_FACTOR, 3)
 WEIGHTS = 'imagenet'
 TRAINABLE = False # Determines if we train existing architectures end-to-end
+NORMALIZE = False #True # Whether or not to normalize data before it enters the NN
 
 # needed, because mse and mae just produce a network that predicts the mean angle
 def sum_squared_error(y_true, y_pred):
@@ -76,11 +81,13 @@ def tanh_scaled(x):
     return 2*K.tanh(x)
 
 # From Nvidia paper
-def base_model():
-    overall_activation = 'elu'  
-    percent_drop = 0.10
+def nvidia_model():
+    overall_activation = 'linear' # DO NOT CHANGE! NEEDED IN ORDER TO AVOID SATURATION!
 
     model = Sequential()
+    if NORMALIZE:
+        model.add(Lambda(lambda x: x/127.5 - 1,
+                  input_shape=INPUT_SHAPE))
     model.add(Convolution2D(24, 5, 5, subsample=(2,2), 
                             input_shape=INPUT_SHAPE, 
                             border_mode='valid', dim_ordering='tf'))
@@ -89,48 +96,45 @@ def base_model():
     model.add(Activation(overall_activation))
     model.add(Convolution2D(48, 5, 5, border_mode='valid', subsample=(2,2)))
     model.add(Activation(overall_activation))
-    model.add(Convolution2D(64, 3, 3, border_mode='valid', subsample=(1,1)))
+    model.add(Convolution2D(64, 3, 3, border_mode='valid')) #, subsample=(1,1)))
     model.add(Activation(overall_activation))
-    model.add(Convolution2D(64, 3, 3, border_mode='valid', subsample=(1,1)))
+    model.add(Convolution2D(64, 3, 3, border_mode='valid')) #, subsample=(1,1)))
     model.add(Activation(overall_activation))
-
     model.add(Flatten())
-    
     model.add(Dense(1164, init="normal"))
-    model.add(Activation(overall_activation))
+    model.add(Dropout(0.1)) #Activation(overall_activation))
     model.add(Dense(100, init="normal"))
-    model.add(Activation(overall_activation))
+    model.add(Dropout(0.1)) #Activation(overall_activation))
     model.add(Dense(50, init="normal"))
-    model.add(Activation(overall_activation))
+    model.add(Dropout(0.1)) #Activation(overall_activation))
     model.add(Dense(10, init="normal"))
+    model.add(Dropout(0.1)) #model.add(Activation(overall_activation))
     model.add(Dense(1))
+    #model.add(Activation('tanh'))
       
 
     return model
 
 
-
+# Highest promise, reasonably small and pretrained...
 def vgg16_model():
 
     input_image = Input(shape=INPUT_SHAPE)
+    n_input = Lambda(lambda input_image: input_image/127.5 - 1,
+                     input_shape=INPUT_SHAPE)
     base_model = VGG16(weights=WEIGHTS,
-                       input_tensor=input_image, include_top=False)
+                       input_tensor=input_image, 
+                       include_top=False)
 
     if not TRAINABLE:		
-        for layer in base_model.layers:
+        for layer in base_model.layers[:-6]:
             layer.trainable = False
    
     x = base_model.output
-    x = GlobalAveragePooling2D()(x)
-    x = BatchNormalization()(x)
-    x = Flatten()(x)
-    x = Dense(4096, activation="relu", W_regularizer=l2(0.01))(x)
-    x = BatchNormalization()(x)
-    x = Dense(2048, activation="relu", W_regularizer=l2(0.01))(x)
-    x = BatchNormalization()(x)
-    x = Dense(2048, activation="relu", W_regularizer=l2(0.01))(x)
+    x = Flatten()(x) #GlobalAveragePooling2D()(x)
+    x = Dense(4096, activation="relu")(x) #, W_regularizer=l2(0.01))(x)
+    x = Dense(4096, activation="relu")(x) #, W_regularizer=l2(0.01))(x)
     x = Dense(1, activation="linear")(x)
-
     model = Model(input=input_image, output=x)
     return model
 
@@ -139,30 +143,24 @@ def vgg19_model():
     input_image = Input(shape=INPUT_SHAPE)
     base_model = VGG19(weights=WEIGHTS, 
                        input_tensor=input_image, include_top=False)
-
     if not TRAINABLE:		
-        for layer in base_model.layers:
+        for layer in base_model.layers[:-6]:
             layer.trainable = False
     
     x = base_model.output
-    x = GlobalAveragePooling2D()(x)
-    x = BatchNormalization()(x)
-    x = Flatten()(x)
+    x = Flatten()(x) #GlobalAveragePooling2D()(x)
     x = Dense(4096, activation="relu")(x)
-    x = Dense(2048, activation="relu")(x)
-    x = Dense(1024, activation="relu")(x)
+    x = Dense(4096, activation="relu")(x)
     x = Dense(1, activation="linear")(x)
-
     return Model(input=input_image, output=x)
 
 def resnet_model():
 
-    base_model = ResNet50(inputs_shape=INPUT_SHAPE,
+    input_image = Input(shape=INPUT_SHAPE)
+    base_model = ResNet50(input_tensor=input_image,
                           weights=WEIGHTS, 
                           include_top=False)
-
     if not TRAINABLE:
-        # first: train only the top layers (which were randomly initialized)
         for layer in base_model.layers:
             layer.trainable = False
 
@@ -170,41 +168,29 @@ def resnet_model():
     x = GlobalAveragePooling2D()(x) 
     x = Dense(100,  activation='relu', name='fc1000')(x)
     pred = Dense(1, activation='relu')(x)
-    
     model = Model(input=base_model.input, output=pred)
     return model
 
 
 def xception_model():
 
-    percent_drop = 0.20
     base_model = Xception(weights='imagenet', include_top=False)
-
-    # first: train only the top layers (which were randomly initialized)
-    # i.e. freeze all convolutional layers
     for layer in base_model.layers:
         layer.trainable = False
 
     x = base_model.output
-    # Essentially our own version of xception top layer, but untrained.
-    # Has additional Dense 100 layer and output of 1, not 1000
     x = GlobalAveragePooling2D()(x)
     x = Dense(1164, init="normal", activation='elu')(x)
     x = Dense(100, init="normal", activation='elu')(x)
     x = Dense(50, init="normal", activation='elu')(x)
     x = Dense(10, init="normal", activation='elu')(x)
     pred = Dense(1)(x) 
-    
     model = Model(input=base_model.input, output=pred)
-
     return model
 
 def inception_model():
 
     base_model = InceptionV3(weights=WEIGHTS, include_top=False)
-
-    # first: train only the top layers (which were randomly initialized)
-    # i.e. freeze all convolutional InceptionV3 layers
     if not TRAINABLE:
         for layer in base_model.layers:
             layer.trainable = False
@@ -214,19 +200,17 @@ def inception_model():
     x = Dense(1024, activation='relu')(x)
     x = Dense(200,  activation='relu')(x)
     pred = Dense(1)(x)
-
-    # this is the model we will train
     model = Model(input=base_model.input, output=pred)
-
-
     return model
 
 def comma_ai_model():
     model = Sequential()
 
-    model.add(Lambda(lambda x: x/127.5 - 1,
-              input_shape=INPUT_SHAPE))
-    model.add(Conv2D(16, 8, 8, subsample=(4, 4), border_mode="same"))
+    if NORMALIZE: 
+        model.add(Lambda(lambda x: x/127.5 - 1,
+                  input_shape=INPUT_SHAPE))
+    model.add(Conv2D(16, 8, 8, subsample=(4, 4), border_mode="same",
+                     input_shape=INPUT_SHAPE))
     model.add(ELU())
     model.add(Conv2D(32, 5, 5, subsample=(2, 2), border_mode="same"))
     model.add(ELU())
@@ -243,6 +227,45 @@ def comma_ai_model():
     
     return model
 
+def alexnet_model(weights_path=None, regression=True):
+
+    if regression:
+        input_ = Input(shape=INPUT_SHAPE)
+
+    model = Sequential()
+    model.add(Convolution2D(64, 11, 11, subsample=(4, 4),
+                            input_shape=INPUT_SHAPE, border_mode='valid', dim_ordering='tf'))
+    model.add(BatchNormalization())
+    model.add(Activation('relu'))
+    #model.add(MaxPooling2D(pool_size=(3, 3)))
+
+    model.add(Convolution2D(128, 7, 7, subsample=(3,3), border_mode='valid'))
+    model.add(BatchNormalization())
+    model.add(Activation('relu'))
+    #model.add(MaxPooling2D(pool_size=(3, 3)))
+
+    model.add(Convolution2D(192, 3, 3, subsample=(3,3), border_mode='valid'))
+    model.add(BatchNormalization())
+    model.add(Activation('relu'))
+    #model.add(MaxPooling2D(pool_size=(3, 3)))
+
+    model.add(Convolution2D(256, 3, 3, subsample=(3,3), border_mode='valid'))
+    model.add(BatchNormalization())
+    model.add(Activation('relu'))
+    #model.add(MaxPooling2D(pool_size=(2, 2)))
+
+    model.add(Flatten())
+    model.add(Dense(8192, init='normal'))
+    model.add(BatchNormalization())
+    model.add(Activation('relu'))
+    model.add(Dense(4096, init='normal'))
+    model.add(BatchNormalization())
+    model.add(Activation('relu'))
+    model.add(Dense(4096, init='normal'))
+    #model.add(BatchNormalization(1000))
+    model.add(Dense(1)) #Activation('softmax'))
+
+    return model
 
 def load_batch(course_data, course_name, batches_so_far, batch_size, test=False):
 
@@ -294,11 +317,13 @@ def build_batch(batch_size, sub_list, course_name, driving_type):
         # above is a hack, because of how Udacity simulator works
 
         # Randomly choose between mixed, corrective, or inline driving sets
-        tmp_img = sp.ndimage.imread(
-                        os.path.join(BASE_PATH, course_name, driving_type, 
+        #tmp_img = sp.ndimage.imread(
+        tmp_img = cv2.imread(os.path.join(BASE_PATH, course_name, driving_type, 
                                      "IMG", filename_partial))
+        tmp_img = cv2.cvtColor(tmp_img, cv2.COLOR_BGR2YUV)
         if RESIZE_FACTOR < 1:
             tmp_img = cv2.resize(tmp_img, (0, 0), fx=RESIZE_FACTOR, fy=RESIZE_FACTOR)
+
         data.append(tmp_img)
         labels.append([label])    
         current_size += 1
@@ -336,10 +361,12 @@ def load_data(csv_lists, batches_so_far=0, batch_size=256, test=False):
 def main():
 
     mini_batch_size = MINI_BATCH_SIZE 
-    model = 'comma' #xception'
+    model = 'nvda' 
 
     if model == 'nvda':
-        model = base_model()
+        model = nvidia_model()
+    elif model == 'alex':
+        model = alexnet_model()
     elif model == 'comma':
         model = comma_ai_model()
     elif model == 'resnet':
@@ -354,7 +381,7 @@ def main():
         model = vgg19_model()  
 
     model.compile(loss='mse',  
-                  optimizer=RMSprop(lr=0.005)) #Adam(lr=0.005)) 
+                  optimizer=Adam()) 
     model.summary()
     seed = 7
     np.random.seed(seed)
@@ -380,9 +407,6 @@ def main():
         rotation_range = 0,  # randomly rotate images in the range (degrees, 0 to 180)
         horizontal_flip = False,  # randomly flip images
         vertical_flip = False)  # randomly flip images
-
-
-    
 
     print("Start training...")
     csv_lists = {}
@@ -418,9 +442,6 @@ def main():
         while epoch < epochs: 
             batches += 1
             print('Starting batch %s' % batches)
-            #X_train = X_train.astype('float32')
-            #X_train = (X_train - np.mean(X_train))/np.std(X_train)
-
             model.fit_generator(datagen.flow(X_train, y_train, 
                                          batch_size=mini_batch_size),
                             samples_per_epoch=len(X_train), nb_epoch=1, # on subsample 
