@@ -14,12 +14,19 @@ config.gpu_options.allow_growth = True
 
 from keras import backend as K
 from keras.layers.core import Lambda
+from keras.layers.advanced_activations import (
+    LeakyReLU,
+    PReLU,
+    ELU
+)
+
 from keras.callbacks import ModelCheckpoint
 from keras.applications import VGG16, VGG19
 from keras.applications.resnet50 import ResNet50
 from keras.applications.inception_v3 import InceptionV3
 from keras.applications.xception import Xception
 from keras.optimizers import SGD, Adam, RMSprop
+
 
 from keras.models import (
     Model,
@@ -60,18 +67,27 @@ from imagenet_tool import synset_to_id, id_to_synset,synset_to_dfs_ids
 
 K.set_image_dim_ordering("tf")
 
-DRIVING_TYPES = ['mixed'] #, 'corrective'] #, 'inline'] # Choose what type of data to sample
-COURSES = ['flat']#,'inclines'] # Randomly sample from this
+#DRIVING_TYPES = ['mixed']
+DRIVING_TYPES = [
+                 'corrective', 
+                 'inline'
+                ] # Choose what type of data to sample
+COURSES = ['flat',
+           'inclines'
+          ] # Randomly sample from this
 # These two lists represent a tree: top level choose flat or inclines
 # Second level choose mixed, corrective or inline
 BASE_PATH = '/home/paul/workspace/keras-resnet-sdc/recorded_data'
-MINI_BATCH_SIZE = 256
-RESIZE_FACTOR = 0.5 
+MINI_BATCH_SIZE = 128
+RESIZE_FACTOR = 0.5
+EPOCHS = 25
 
 INPUT_SHAPE = (160*RESIZE_FACTOR, 320*RESIZE_FACTOR, 3)
 WEIGHTS = 'imagenet'
 TRAINABLE = False # Determines if we train existing architectures end-to-end
 NORMALIZE = False #True # Whether or not to normalize data before it enters the NN
+DROPOUT   = True
+
 
 # needed, because mse and mae just produce a network that predicts the mean angle
 def sum_squared_error(y_true, y_pred):
@@ -83,6 +99,7 @@ def tanh_scaled(x):
 # From Nvidia paper
 def nvidia_model():
     overall_activation = 'linear' # DO NOT CHANGE! NEEDED IN ORDER TO AVOID SATURATION!
+    
 
     model = Sequential()
     if NORMALIZE:
@@ -96,21 +113,25 @@ def nvidia_model():
     model.add(Activation(overall_activation))
     model.add(Convolution2D(48, 5, 5, border_mode='valid', subsample=(2,2)))
     model.add(Activation(overall_activation))
-    model.add(Convolution2D(64, 3, 3, border_mode='valid')) #, subsample=(1,1)))
+    model.add(Convolution2D(64, 3, 3, border_mode='valid')) 
     model.add(Activation(overall_activation))
-    model.add(Convolution2D(64, 3, 3, border_mode='valid')) #, subsample=(1,1)))
+    model.add(Convolution2D(64, 3, 3, border_mode='valid'))
     model.add(Activation(overall_activation))
     model.add(Flatten())
     model.add(Dense(1164, init="normal"))
-    model.add(Dropout(0.1)) #Activation(overall_activation))
+    if DROPOUT: model.add(Dropout(0.1)) 
+    model.add(Activation(overall_activation))
     model.add(Dense(100, init="normal"))
-    model.add(Dropout(0.1)) #Activation(overall_activation))
+    if DROPOUT: model.add(Dropout(0.1)) 
+    model.add(Activation(overall_activation))
     model.add(Dense(50, init="normal"))
-    model.add(Dropout(0.1)) #Activation(overall_activation))
+    if DROPOUT: model.add(Dropout(0.1)) 
+    model.add(Activation(overall_activation))
     model.add(Dense(10, init="normal"))
-    model.add(Dropout(0.1)) #model.add(Activation(overall_activation))
+    if DROPOUT: model.add(Dropout(0.1)) 
+    model.add(Activation(overall_activation))
     model.add(Dense(1))
-    #model.add(Activation('tanh'))
+    #model.add(Activation('linear'))
       
 
     return model
@@ -205,24 +226,25 @@ def inception_model():
 
 def comma_ai_model():
     model = Sequential()
+    overall_activation = 'linear' # 'elu'
 
     if NORMALIZE: 
         model.add(Lambda(lambda x: x/127.5 - 1,
                   input_shape=INPUT_SHAPE))
     model.add(Conv2D(16, 8, 8, subsample=(4, 4), border_mode="same",
                      input_shape=INPUT_SHAPE))
-    model.add(ELU())
+    model.add(Activation(overall_activation))
     model.add(Conv2D(32, 5, 5, subsample=(2, 2), border_mode="same"))
-    model.add(ELU())
+    model.add(Activation(overall_activation))
     model.add(Conv2D(64, 5, 5, subsample=(2, 2), border_mode="same"))
 
     model.add(Flatten())
 
-    model.add(Dropout(0.2))
-    model.add(ELU())
+    if DROPOUT: model.add(Dropout(0.2))
+    model.add(Activation(overall_activation))
     model.add(Dense(512))
-    model.add(Dropout(0.5))
-    model.add(ELU())
+    if DROPOUT: model.add(Dropout(0.5))
+    model.add(Activation(overall_activation))
     model.add(Dense(1))
     
     return model
@@ -380,7 +402,7 @@ def main():
     elif model == 'vgg19':
         model = vgg19_model()  
 
-    model.compile(loss='mse',  
+    model.compile(loss=sum_squared_error, #'mse',  
                   optimizer=Adam()) 
     model.summary()
     seed = 7
@@ -433,13 +455,12 @@ def main():
     exhausted, (X_train, y_train), (X_test, y_test) = load_data(csv_lists, 
                                                      batches_so_far=batches,
                                                      test=True)
-    epochs = 100
     epoch  = 0
     exhaust_batch_amount = 0
     print("Starting first epoch")
    
     try: 
-        while epoch < epochs: 
+        while epoch < EPOCHS: 
             batches += 1
             print('Starting batch %s' % batches)
             model.fit_generator(datagen.flow(X_train, y_train, 
