@@ -8,7 +8,7 @@ import numpy as np
 import tensorflow as tf
 flags = tf.app.flags
 flags.FLAGS.CUDA_VISIBLE_DEVICES = ''
-
+from augmentation import generate_train_from_PD_batch
 config = tf.ConfigProto()
 config.gpu_options.allow_growth = True
 
@@ -67,22 +67,23 @@ from imagenet_tool import synset_to_id, id_to_synset,synset_to_dfs_ids
 
 K.set_image_dim_ordering("tf")
 
-#DRIVING_TYPES = ['mixed']
-DRIVING_TYPES = [
-                 'corrective', 
-                 'inline'
-                ] # Choose what type of data to sample
-COURSES = ['flat',
-           'inclines'
-          ] # Randomly sample from this
+DRIVING_TYPES = ['']
+#                 'corrective', 
+#                 'inline'
+#                ] # Choose what type of data to sample
+COURSES = ['']
+#           'flat',
+#           'inclines'
+#          ] # Randomly sample from this
 # These two lists represent a tree: top level choose flat or inclines
 # Second level choose mixed, corrective or inline
-BASE_PATH = '/home/paul/workspace/keras-resnet-sdc/recorded_data'
-MINI_BATCH_SIZE = 128
+BASE_PATH = '/home/paul/workspace/keras-resnet-sdc/data' #recorded_data'
+MINI_BATCH_SIZE = 256
 RESIZE_FACTOR = 0.5
-EPOCHS = 25
+EPOCHS = 5
 
-INPUT_SHAPE = (160*RESIZE_FACTOR, 320*RESIZE_FACTOR, 3)
+#INPUT_SHAPE = (160*RESIZE_FACTOR, 320*RESIZE_FACTOR, 3)
+INPUT_SHAPE = (64,64,3)
 WEIGHTS = 'imagenet'
 TRAINABLE = False # Determines if we train existing architectures end-to-end
 NORMALIZE = False #True # Whether or not to normalize data before it enters the NN
@@ -98,7 +99,7 @@ def tanh_scaled(x):
 
 # From Nvidia paper
 def nvidia_model():
-    overall_activation = 'linear' # DO NOT CHANGE! NEEDED IN ORDER TO AVOID SATURATION!
+    overall_activation = 'elu' #'linear' # DO NOT CHANGE! NEEDED IN ORDER TO AVOID SATURATION!
     
 
     model = Sequential()
@@ -131,7 +132,7 @@ def nvidia_model():
     if DROPOUT: model.add(Dropout(0.1)) 
     model.add(Activation(overall_activation))
     model.add(Dense(1))
-    #model.add(Activation('linear'))
+    model.add(Activation('linear'))
       
 
     return model
@@ -226,7 +227,7 @@ def inception_model():
 
 def comma_ai_model():
     model = Sequential()
-    overall_activation = 'linear' # 'elu'
+    overall_activation = 'elu'
 
     if NORMALIZE: 
         model.add(Lambda(lambda x: x/127.5 - 1,
@@ -306,6 +307,7 @@ def load_batch(course_data, course_name, batches_so_far, batch_size, test=False)
                 exhausted = True
 
             sub_list = driving_type_data[s_index:s_index+batch_size]
+            #print(sub_list)
         #else:
         #    sub_list = driving_type_data[-1:-1-batch_size*2]
         data, labels = build_batch(batch_size, sub_list, course_name, driving_type)
@@ -322,7 +324,7 @@ def load_batch(course_data, course_name, batches_so_far, batch_size, test=False)
 def build_batch(batch_size, sub_list, course_name, driving_type):
 
     labels, data = [], []
-    current_size = 0
+    current_size = 1
     # Randomly sample from that subset
     stop = False
     while current_size < batch_size:
@@ -339,9 +341,11 @@ def build_batch(batch_size, sub_list, course_name, driving_type):
         # above is a hack, because of how Udacity simulator works
 
         # Randomly choose between mixed, corrective, or inline driving sets
-        #tmp_img = sp.ndimage.imread(
-        tmp_img = cv2.imread(os.path.join(BASE_PATH, course_name, driving_type, 
-                                     "IMG", filename_partial))
+        #print(values)
+        tmp_path = os.path.join(BASE_PATH, course_name, driving_type,
+                                     "IMG", filename_partial)
+        #print("Using path %s", tmp_path)
+        tmp_img = cv2.imread(tmp_path)
         tmp_img = cv2.cvtColor(tmp_img, cv2.COLOR_BGR2YUV)
         if RESIZE_FACTOR < 1:
             tmp_img = cv2.resize(tmp_img, (0, 0), fx=RESIZE_FACTOR, fy=RESIZE_FACTOR)
@@ -402,18 +406,18 @@ def main():
     elif model == 'vgg19':
         model = vgg19_model()  
 
-    model.compile(loss=sum_squared_error, #'mse',  
-                  optimizer=Adam()) 
+    model.compile(loss='mse', #sum_squared_error,  
+                  optimizer='adam') 
     model.summary()
     seed = 7
     np.random.seed(seed)
     
     # autosave best Model and load any previous weights
     model_file = "./model.h5"
+    checkpointer = ModelCheckpoint(model_file,
+                                   verbose = 1, save_best_only = False) #True)
     if os.path.isfile(model_file):   
         model.load_weights(model_file)
-    checkpointer = ModelCheckpoint(model_file, 
-                                   verbose = 1, save_best_only = True)
     model_json = model.to_json()
     with open("model.json", "w") as json_file:
         json_file.write(model_json)
@@ -432,6 +436,7 @@ def main():
 
     print("Start training...")
     csv_lists = {}
+    #data_files_s = 
     for course in COURSES:
         course_dict = {}
         type_dict = {}
@@ -448,7 +453,6 @@ def main():
             print("  %s" % driving_type)
  
     
- 
     print("fitting the model on the batches generated by datagen.flow()")
     exhausted = False # Means we have gone through all of the training set
     batches = 0
@@ -457,25 +461,36 @@ def main():
                                                      test=True)
     epoch  = 0
     exhaust_batch_amount = 0
+    val_size = 1
     print("Starting first epoch")
-   
+    print(csv_list[0])
+    csv_list = csv_list[1:] # Remove keys   
+    print(csv_list[0])
+
     try: 
         while epoch < EPOCHS: 
             batches += 1
-            print('Starting batch %s' % batches)
-            model.fit_generator(datagen.flow(X_train, y_train, 
-                                         batch_size=mini_batch_size),
-                            samples_per_epoch=len(X_train), nb_epoch=1, # on subsample 
-                            validation_data=(X_test, y_test), 
-                            callbacks=[checkpointer])
+            #print('Starting batch %s' % batches)
+            
+            train_r_generator = generate_train_from_PD_batch(csv_list, mini_batch_size)
+            nb_vals = np.round(len(csv_list)/val_size) - 1
+            model.fit_generator(#datagen.flow(X_train, y_train, 
+                                train_r_generator,            
+                                #batch_size=mini_batch_size),
+                                samples_per_epoch=20000, #len(X_train), 
+                                nb_epoch=1, # on subsample
+                                verbose=1,
+                                #validation_data=(X_test, y_test), 
+                                callbacks=[checkpointer]
+                                )
                             
             exhausted, (X_train, y_train), _ = load_data(csv_lists, batch_size=mini_batch_size, 
                                           batches_so_far=batches)
         
-            if exhausted: 
-                batches = -1
-                epoch += 1
-                print("End epoch %s on training set" % epoch)
+            #if exhausted: 
+            #    batches = -1
+            epoch += 1
+            print("End epoch %s on training set" % epoch)
     except KeyboardInterrupt:
         print("Saving most recent weights before halting...")
         model.save_weights(model_file)      

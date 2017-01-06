@@ -18,6 +18,7 @@ from keras.models import model_from_json
 from keras.preprocessing.image import ImageDataGenerator, array_to_img, img_to_array
 
 from model import RESIZE_FACTOR
+from augmentation import preprocessImage
 sio = socketio.Server()
 app = Flask(__name__)
 model = None
@@ -35,8 +36,9 @@ def telemetry(sid, data):
     imgString = data["image"]
     image = Image.open(BytesIO(base64.b64decode(imgString)))
     image_array = np.asarray(image)
-    if RESIZE_FACTOR < 1:
-        image_array = sp.misc.imresize(image_array, RESIZE_FACTOR)
+    #if RESIZE_FACTOR < 1:
+    #    image_array = sp.misc.imresize(image_array, RESIZE_FACTOR)
+    image_array = preprocessImage(image_array)
     transformed_image_array = image_array[None, :, :, :]
     # This model currently assumes features of the model are just the images. 
     # Feel free to change this.
