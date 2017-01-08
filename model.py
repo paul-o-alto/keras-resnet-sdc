@@ -68,13 +68,7 @@ from imagenet_tool import synset_to_id, id_to_synset,synset_to_dfs_ids
 K.set_image_dim_ordering("tf")
 
 DRIVING_TYPES = ['']
-#                 'corrective', 
-#                 'inline'
-#                ] # Choose what type of data to sample
 COURSES = ['']
-#           'flat',
-#           'inclines'
-#          ] # Randomly sample from this
 # These two lists represent a tree: top level choose flat or inclines
 # Second level choose mixed, corrective or inline
 BASE_PATH = '/home/paul/workspace/keras-resnet-sdc/data' #recorded_data'
@@ -341,10 +335,8 @@ def build_batch(batch_size, sub_list, course_name, driving_type):
         # above is a hack, because of how Udacity simulator works
 
         # Randomly choose between mixed, corrective, or inline driving sets
-        #print(values)
         tmp_path = os.path.join(BASE_PATH, course_name, driving_type,
                                      "IMG", filename_partial)
-        #print("Using path %s", tmp_path)
         tmp_img = cv2.imread(tmp_path)
         tmp_img = cv2.cvtColor(tmp_img, cv2.COLOR_BGR2YUV)
         if RESIZE_FACTOR < 1:
@@ -436,7 +428,6 @@ def main():
 
     print("Start training...")
     csv_lists = {}
-    #data_files_s = 
     for course in COURSES:
         course_dict = {}
         type_dict = {}
@@ -470,7 +461,6 @@ def main():
     try: 
         while epoch < EPOCHS: 
             batches += 1
-            #print('Starting batch %s' % batches)
             
             train_r_generator = generate_train_from_PD_batch(csv_list, mini_batch_size)
             nb_vals = np.round(len(csv_list)/val_size) - 1
@@ -480,15 +470,12 @@ def main():
                                 samples_per_epoch=20000, #len(X_train), 
                                 nb_epoch=1, # on subsample
                                 verbose=1,
-                                #validation_data=(X_test, y_test), 
                                 callbacks=[checkpointer]
                                 )
                             
             exhausted, (X_train, y_train), _ = load_data(csv_lists, batch_size=mini_batch_size, 
                                           batches_so_far=batches)
         
-            #if exhausted: 
-            #    batches = -1
             epoch += 1
             print("End epoch %s on training set" % epoch)
     except KeyboardInterrupt:
