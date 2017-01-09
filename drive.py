@@ -23,6 +23,7 @@ sio = socketio.Server()
 app = Flask(__name__)
 model = None
 prev_image_array = None
+DESIRED_SPEED = 10
 
 @sio.on('telemetry')
 def telemetry(sid, data):
@@ -46,7 +47,7 @@ def telemetry(sid, data):
     steering_angle = float(model.predict(transformed_image_array, batch_size=1))
     print ("Predicted %s" % steering_angle)
     # The driving model currently just outputs a constant throttle. Feel free to edit this.
-    throttle = 0.1
+    throttle = (DESIRED_SPEED-abs(float(speed)))*0.5
     print(steering_angle, throttle)
     send_control(steering_angle, throttle)
 

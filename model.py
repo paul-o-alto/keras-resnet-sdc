@@ -71,10 +71,10 @@ DRIVING_TYPES = ['']
 COURSES = ['']
 # These two lists represent a tree: top level choose flat or inclines
 # Second level choose mixed, corrective or inline
-BASE_PATH = '/home/paul/workspace/keras-resnet-sdc/data' #recorded_data'
+BASE_PATH = '/home/paul/workspace/keras-resnet-sdc/test_data'
 MINI_BATCH_SIZE = 256
 RESIZE_FACTOR = 0.5
-EPOCHS = 5
+EPOCHS = 25
 
 #INPUT_SHAPE = (160*RESIZE_FACTOR, 320*RESIZE_FACTOR, 3)
 INPUT_SHAPE = (64,64,3)
@@ -84,15 +84,17 @@ NORMALIZE = False #True # Whether or not to normalize data before it enters the 
 DROPOUT   = True
 
 
-# needed, because mse and mae just produce a network that predicts the mean angle
 def sum_squared_error(y_true, y_pred):
     return K.sum(K.square(y_pred - y_true), axis=0)
 
 def tanh_scaled(x):
     return 2*K.tanh(x)
 
-# From Nvidia paper
 def nvidia_model():
+    """
+    This model is from the Nvidia "End-to-end" paper
+    """
+
     overall_activation = 'elu' #'linear' # DO NOT CHANGE! NEEDED IN ORDER TO AVOID SATURATION!
     
 
@@ -132,7 +134,6 @@ def nvidia_model():
     return model
 
 
-# Highest promise, reasonably small and pretrained...
 def vgg16_model():
 
     input_image = Input(shape=INPUT_SHAPE)
@@ -338,9 +339,9 @@ def build_batch(batch_size, sub_list, course_name, driving_type):
         tmp_path = os.path.join(BASE_PATH, course_name, driving_type,
                                      "IMG", filename_partial)
         tmp_img = cv2.imread(tmp_path)
-        tmp_img = cv2.cvtColor(tmp_img, cv2.COLOR_BGR2YUV)
+        tmp_img = cv2.cvtColor(tmp_img, cv2.COLOR_RGB2YUV)
         if RESIZE_FACTOR < 1:
-            tmp_img = cv2.resize(tmp_img, (0, 0), fx=RESIZE_FACTOR, fy=RESIZE_FACTOR)
+            tmp_img = cv2.resize(tmp_img, (0, 0), fx=64/320, fy=64/160)
 
         data.append(tmp_img)
         labels.append([label])    
@@ -398,7 +399,8 @@ def main():
     elif model == 'vgg19':
         model = vgg19_model()  
 
-    model.compile(loss='mse', #sum_squared_error,  
+    plot(model, to_file='model.png')
+    model.compile(loss='mse', #metrics=['accuracy'],  
                   optimizer='adam') 
     model.summary()
     seed = 7
@@ -407,7 +409,7 @@ def main():
     # autosave best Model and load any previous weights
     model_file = "./model.h5"
     checkpointer = ModelCheckpoint(model_file,
-                                   verbose = 1, save_best_only = False) #True)
+                                   verbose = 1, save_best_only = True)
     if os.path.isfile(model_file):   
         model.load_weights(model_file)
     model_json = model.to_json()
@@ -466,15 +468,18 @@ def main():
             nb_vals = np.round(len(csv_list)/val_size) - 1
             model.fit_generator(#datagen.flow(X_train, y_train, 
                                 train_r_generator,            
-                                #batch_size=mini_batch_size),
-                                samples_per_epoch=20000, #len(X_train), 
+                                #batch_size=mini_batch_size,
+                                samples_per_epoch=20000, 
+                                #samples_per_epoch=len(X_train), 
+                                #validation_split=0.33,
                                 nb_epoch=1, # on subsample
                                 verbose=1,
+                                validation_data=(X_test, y_test), 
                                 callbacks=[checkpointer]
                                 )
                             
-            exhausted, (X_train, y_train), _ = load_data(csv_lists, batch_size=mini_batch_size, 
-                                          batches_so_far=batches)
+            #exhausted, (X_train, y_train), _ = load_data(csv_lists, batch_size=mini_batch_size, 
+            #                                             batches_so_far=batches)
         
             epoch += 1
             print("End epoch %s on training set" % epoch)
