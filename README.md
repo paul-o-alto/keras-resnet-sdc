@@ -10,6 +10,6 @@ After finding that resnet was not very useful, I turned to the Nvidia architectu
 
 After reading and incorporating some basic data augmentation and utilizing 64x64 images, instead of the 1/2 scaled image I had been using before (320x160, down to 160x80) the model was able to drive all of Track 1, no problem. The number of parameters in the model was brought down to a more reasonable level (~300,000). A visualization of the architecture is shown below.
 
-![image](model.png) 
+![image](model.png?align=center) 
 
 This model included 5 convolutional layers and 4 fully connected layers. With a 64x64 image fed in, this network had ~300,000 parameters total. I did experiment with other existing architectures (comma ai, vgg, inception, xception), but none came close to the performance of the nvidia architecture. The only shortcoming of the model I trained was that it couldn't quite perform on Track 2. 
