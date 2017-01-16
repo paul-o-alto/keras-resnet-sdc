@@ -8,6 +8,9 @@ import numpy as np
 import os.path
 import math
 
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+
 rows = 160
 cols = 320
 pr_threshold = 0.05
@@ -87,13 +90,17 @@ def preprocess_image_file_train(line_data):
 
     y_steer = float(line_data[3]) + shift_ang # 3 = 'steering'
        
-    image = cv2.imread('./data/'+path_file, 1)
+    image = cv2.imread(os.path.join('./test_data', path_file), 1)
+    #plt.imshow(image)
+    #plt.show()
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     image, y_steer, tr_x = trans_image(image, y_steer, 100)
     image = augment_brightness_camera_images(image)
     image = preprocessImage(image)
     image = np.array(image)
     ind_flip = np.random.randint(2)
+    #plt.imshow(image)
+    #plt.show()
     if ind_flip == 0:
         image = cv2.flip(image, 1)
         y_steer = -y_steer

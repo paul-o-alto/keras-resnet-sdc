@@ -399,7 +399,7 @@ def main():
     elif model == 'vgg19':
         model = vgg19_model()  
 
-    plot(model, to_file='model.png')
+    plot(model, show_shapes=True, to_file='model.png')
     model.compile(loss='mse', #metrics=['accuracy'],  
                   optimizer='adam') 
     model.summary()
